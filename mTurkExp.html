@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!--
+       Most of the functions below are written by Jason Carpenter.
+       GitHub: https://github.com/jmcarpenter2
+    -->
+    <title>mTurk Short Survey</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+    <script src="jspsych-6.0.1/jspsych.js"></script>
+    <script src="jspsych-6.0.1/plugins/jspsych-external-html.js"></script>
+    <script src="jspsych-6.0.1/plugins/jspsych-survey-multi-choice.js"></script>
+    <script src="jspsych-6.0.1/plugins/jspsych-html-keyboard-response.js"></script>
+    <link href="jspsych-6.0.1/css/jspsych.css" rel="stylesheet" type="text/css"></link>
+</head>
+<body>
+</body>
+<script>
+    
+        //Data switches
+        var saveToDatabase = 1;
+        var saveLocally = 0;
+        var displayData = 0;
+        var tableName = 'mTurkExperimental';
+        
+        var workerId = $_GET('workerID');
+        
+
+        //Consent form
+        var consent_block = {
+          type:'external-html',
+          url: "consentForm.html",
+          cont_btn: "startExperimentButton",
+          check_fn: check_consent
+        };
+
+
+        var survey_trial = {
+            type: 'survey-multi-choice',
+            preamble: '<h2>Welcome to our survey!</h2> <br/> <h3>Please answer truthfully as your answers will not affect your compensation.</h3>',
+            questions: [
+                {
+                    prompt: 'What is your age?', 
+                    options: ["20-30", "31-40", "41-50", "above 50"]
+                },
+                {
+                    prompt: 'Which country are you in?', 
+                    options : ["USA", "other"]
+                }
+            ],
+            button_label: "End survey"
+        };
+        
+        // Block to create completionCode for completion code, and check if they've earned a bonus on this session
+        var completionCode_block = 
+        {
+            type: 'html-keyboard-response',
+            stimulus: '<center><p class="loader" style="margin-top: 20%">Loading...</p></center>',
+            timing_response: 1,
+            trial_duration: 10,
+            //display_element: $('#vert-center'),
+            on_finish: function()
+            {
+                // Create completionCode and check if it exists in the database. Keep running until a unique one is generated
+                completionCode = Math.floor(Math.random() * 9000000 + 1000000); 
+                checkID(false, completionCode, 'completion_code', tableName, function(exists){getNewSubID(exists);}); 
+            },
+            timing_post_trial: 0
+        };
+        
+        // Block to thank the participate, tell them about their bonus, and display their completionCode completion code
+        var goodbye_block = 
+        {
+            type: 'html-keyboard-response',
+            response_ends_trial: false,
+            stimulus: function()
+            {
+                var output = '<p class="instructions">Thank you for participating!</p>';
+                var data = jsPsych.data.get().last(1).values()[0];
+                var completionCode = data.completion_code;
+                    
+                // Display completionCode completion code
+                output += '<p class="instructions"> Your survey code is: <strong>'+ completionCode + '</strong></p>' +
+                    '<p class="instructions">Please paste this number back into the box at the mTurk HIT website.</p>';
+                
+                return output;
+            },
+            timing_post_trial: 0
+        };
+        
+        var timeline = [];
+        timeline.push(consent_block);
+        timeline.push(survey_trial);
+        timeline.push(completionCode_block);
+        timeline.push(goodbye_block);
+
+        //Initiate the experiment
+        jsPsych.init({
+            timeline: timeline,
+            on_finish: function(){ //Execute this when the experiment finishes
+                if(saveLocally == true){
+                    jsPsych.data.get().localSave('csv','testSave.csv'); //Save the data locally in a .csv file
+                }
+                if(displayData == true){
+                    jsPsych.data.displayData(); //Display the data onto the browser screen
+                }
+            },
+            on_trial_finish: function(){ //Execute this after every trial
+                if (saveToDatabase == true){
+                    save_data(tableName, [jsPsych.data.get().last(1).values()[0]]);
+                }
+            }
+        });
+        
+        
+        //==============================
+        //========= FUNCTIONS ==========
+        //==============================
+        
+        // Function to draw parameters from the URL
+        function $_GET(param) 
+        {
+            var vars = {};
+            window.location.href.replace( 
+                /[?&]+([^=&]+)=?([^&]*)?/gi, // regexp
+                function( m, key, value ) { // callback
+                    vars[key] = value !== undefined ? value : '';
+                }
+            );
+
+            if ( param ) 
+            {
+                console.log(vars);
+                console.log(param);
+                return vars[param] ? vars[param] : null;    
+            }
+            return vars;
+        }
+        
+        // Function to check compare the inputted ID to all IDs of the IDType in the SQL database
+        function checkID(async, ID, IDType, data_table, callback)
+        {
+            $.ajax({
+                type:'post',
+                cache: false,
+                async: async,
+                url: 'checkSubID.php',
+                data: // Inputs into the .php script
+                {
+                    ID: ID,
+                    IDType: IDType,
+                    completeTrials: 3450,
+                    data_table: data_table
+                },
+                success: function(exists)  // Use whatever callback function is specified when calling the checkID function
+                {
+                    callback(exists);
+                },
+                error: function (xhr, ajaxOptions, thrownError) 
+                {
+                   alert(thrownError);
+               }
+           });
+        }
+        
+        // Callback function for checking if the completionCode exists
+        function getNewSubID(exists)
+        {
+            if (exists === '1' || exists === 1) // If the completionCode exists in the SQL database
+            {
+                completionCode = Math.floor(Math.random() * 9000000 + 1000000); // Generate new completionCode
+                checkID(false, completionCode, 'completion_code', tableName, function(existsNow){getNewSubID(existsNow);}); // Check if the new completionCode exists in the database
+            }
+            else // If the completionCode doesn't exist in the SQL database
+                jsPsych.data.addProperties({completion_code: completionCode}); // Add the completionCode to the data 
+        }
+        
+        //A function to save the data to the SQL table on the psiturk server.  This gets called at the end of the file.
+        function save_data(data_table,data){
+          
+            //Add data to the jsPsych data file
+            jsPsych.data.addProperties({
+                workerId: workerId
+            });
+          
+            //Use AJAX to post the data onto the psiturk server
+            $.ajax({
+                type:'post',
+                cache: false,
+                url: 'savedata.php',
+                data: {
+                    table: data_table,
+                    json: JSON.stringify(data),
+                },
+                success: function(output) { console.log(output); } // write the result to javascript console
+            });
+        }
+      
+        // sample function that might be used to check if a subject has given
+        // consent to participate.
+        function check_consent(elem) {
+          if ($('#consent_checkbox').is(':checked')) {
+            return true;
+          }
+          else {
+            alert("If you wish to participate, you must check the box next to the statement 'I agree to participate in this study.'");
+            return false;
+          }
+          return false;
+        };
+
+
+  </script>
+  </html>
